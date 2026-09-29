@@ -1,0 +1,12 @@
+﻿.venv/
+venv/
+env/
+saidas/
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db
+desktop.ini
+yolo11n.pt
+yolo26n.pt
+yolov8s-worldv2.pt
