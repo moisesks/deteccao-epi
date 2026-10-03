@@ -5,8 +5,8 @@
 ![Licença](https://img.shields.io/badge/licen%C3%A7a-AGPL--3.0-blue)
 ![Plataforma](https://img.shields.io/badge/plataforma-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
 
-Detecta **capacete**, **colete de segurança** e **cabeça descoberta** em imagens,
-vídeos, webcam, câmeras IP ou na tela do computador.
+Detecta **capacete**, **colete de segurança** e **cabeça** em imagens, vídeos,
+webcam, câmeras IP ou na tela do computador.
 
 Os modelos incluídos foram treinados por Moisés Kleinschmitt Da Silva sobre o
 conjunto [SH17](https://arxiv.org/abs/2407.04590), no âmbito do artigo
@@ -51,7 +51,40 @@ pip install -r requirements.txt
 
 ---
 
-## Uso
+## Interface gráfica
+
+Dois cliques em **`app.bat`**. Na primeira vez ele instala a interface
+(PySide6, cerca de 100 MB); depois abre direto. No Linux ou macOS, com o
+ambiente ativo: `python app_epi.py`.
+
+![Interface do Detector de EPI](exemplos/interface.png)
+
+*Foto usada no exemplo: Cemrecan Yurtman, [Pexels](https://www.pexels.com/pt-br/foto/um-operador-usando-ferramenta-na-fabrica-29224564/).*
+
+Na janela você escolhe:
+
+- a **fonte**: webcam, captura de tela, arquivo de vídeo, imagem ou pasta de
+  imagens, câmera IP (RTSP ou HTTP) ou as imagens de exemplo;
+- o **modelo**: `yolo26n_best.pt` ou `yolo11n_best.pt`;
+- a **confiança mínima**, que pode ser ajustada com a detecção rodando.
+
+O painel da direita mostra quantos capacetes, coletes e cabeças há no quadro, e
+a faixa no topo informa quantas cabeças foram encontradas. Também dá para pausar,
+salvar o quadro atual, salvar a imagem da janela e gravar o vídeo com as
+detecções. Tudo vai para a pasta `saidas/`.
+
+| Tecla | Ação |
+|---|---|
+| `Espaço` | pausa e retoma |
+| `S` ou `Ctrl+S` | salva o quadro atual |
+| `F12` | salva a imagem da janela |
+| `←` e `→` | imagem anterior e próxima, no modo de imagens |
+| `F11` | tela cheia |
+| `Esc` | sai da tela cheia ou para a detecção |
+
+---
+
+## Uso pela linha de comando
 
 Dois cliques nos atalhos, ou pela linha de comando:
 
@@ -60,12 +93,12 @@ Dois cliques nos atalhos, ou pela linha de comando:
 | Webcam ao vivo | `webcam.bat` | `python detectar.py` |
 | Capturar a tela | `tela.bat` | `python detectar.py --fonte tela` |
 | Imagens de exemplo | `exemplos.bat` | `python detectar.py --fonte exemplos` |
-| Uma foto | — | `python detectar.py --fonte foto.jpg` |
-| Uma pasta de fotos | — | `python detectar.py --fonte C:\fotos` |
-| Um vídeo | — | `python detectar.py --fonte video.mp4` |
-| Câmera IP | — | `python detectar.py --fonte rtsp://usuario:senha@192.168.0.50/stream` |
+| Uma foto | | `python detectar.py --fonte foto.jpg` |
+| Uma pasta de fotos | | `python detectar.py --fonte C:\fotos` |
+| Um vídeo | | `python detectar.py --fonte video.mp4` |
+| Câmera IP | | `python detectar.py --fonte rtsp://usuario:senha@192.168.0.50/stream` |
 
-No **PowerShell**, chame o Python do ambiente diretamente — não precisa ativar:
+No **PowerShell**, chame o Python do ambiente diretamente, sem precisar ativar:
 
 ```powershell
 .venv\Scripts\python.exe detectar.py --fonte tela
@@ -73,7 +106,7 @@ No **PowerShell**, chame o Python do ambiente diretamente — não precisa ativa
 
 **Modo tela** é o mais prático para testar: abra um vídeo do YouTube de obra ou
 fábrica, rode `tela.bat`, e a detecção acontece sobre o que estiver na tela.
-Deixe a janela de resultado em outro monitor (ou pequena num canto) para não
+Deixe a janela de resultado em outro monitor, ou pequena num canto, para não
 criar um efeito de espelho.
 
 ### Teclas durante a execução
@@ -114,22 +147,27 @@ equilibrado. Baixe para **0.20** se ele estiver deixando passar coisas; suba par
 ## Como interpretar
 
 As caixas são coloridas por classe: **verde** capacete, **laranja** colete,
-**vermelho** cabeça descoberta. A faixa no topo conta quantos de cada tipo há no
-quadro.
+**vermelho** cabeça.
 
-O aviso **"ATENÇÃO: cabeça descoberta no quadro"** aparece quando alguma cabeça
-sem capacete é detectada. É uma leitura **por quadro, não por pessoa**: o
-detector localiza os objetos, mas não associa cada capacete ao seu respectivo
-trabalhador. Uma cena com duas pessoas, uma de capacete e outra sem, acende o
-aviso — o que está correto — mas uma cena com um capacete apoiado sobre uma
-bancada e ninguém usando também não acusaria irregularidade. Essa limitação está
-declarada na seção 4.8 do artigo; o caminho para resolvê-la é acrescentar
-estimativa de pose, associando cada equipamento ao esqueleto da pessoa mais
-próxima.
+**A classe cabeça não significa "sem capacete".** No SH17, a classe `head` marca
+qualquer cabeça visível, com ou sem capacete. Por isso uma pessoa de capacete
+costuma receber duas caixas ao mesmo tempo, uma de capacete e outra de cabeça. A
+cabeça indica que há uma pessoa no quadro; para saber se ela está protegida, é
+preciso conferir se há uma caixa de capacete sobre ela.
+
+O aviso **"Atenção: N cabeças encontradas no quadro"** (na linha de comando,
+**"ATENCAO: cabeca encontrada no quadro"**) aparece sempre que alguma cabeça é
+detectada. É uma leitura **por quadro, não por pessoa**: o detector localiza os
+objetos, mas não associa cada capacete ao seu trabalhador. Um capacete apoiado
+sobre uma bancada, por exemplo, também é contado. Essa limitação está declarada
+na seção 4.8 do artigo. Para decidir automaticamente quem está sem capacete, o
+caminho é associar cada cabeça ao capacete sobreposto a ela ou usar estimativa
+de pose.
 
 ### O que esperar de cada classe
 
-- **Cabeça descoberta** é a classe mais confiável, mAP50 de 0,876.
+- **Cabeça** tem o maior mAP50, 0,876, por ser a classe com mais exemplos no
+  treinamento.
 - **Capacete** é intermediário, 0,624.
 - **Colete** é o ponto fraco, 0,347. O modelo deixa de sinalizar cerca de dois
   terços dos coletes presentes. A causa é o desequilíbrio do conjunto de
@@ -143,41 +181,47 @@ desempenho cai. Bonés comuns podem ser confundidos com capacete.
 
 ## Problemas comuns
 
-**"Não consegui abrir a webcam 0"** — tente `--camera 1`. Feche o Teams, o Zoom
+**"Não consegui abrir a webcam 0":** tente `--camera 1`. Feche o Teams, o Zoom
 ou qualquer programa que esteja usando a câmera.
 
 **"a execução de scripts foi desabilitada neste sistema"** ao rodar
-`.venv\Scripts\activate` no PowerShell — use `.venv\Scripts\python.exe` direto,
-ou libere scripts locais para o seu usuário:
+`.venv\Scripts\activate` no PowerShell: use `.venv\Scripts\python.exe` direto,
+ou libere scripts locais para o seu usuário com
 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`. Os `.bat` não são afetados.
 
-**"Could not find a suitable TLS CA certificate bundle"** no `pip install` —
+**"Could not find a suitable TLS CA certificate bundle"** no `pip install`:
 alguma variável de ambiente (`CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE` ou
 `SSL_CERT_FILE`) aponta para um arquivo que não existe, geralmente sobra de outro
 programa instalado. Verifique com
 `Get-ChildItem Env: | Where-Object { $_.Name -match 'CA_BUNDLE|SSL_CERT' }` e
 remova a variável em *Propriedades do Sistema → Variáveis de Ambiente*.
 
-**A janela abre preta ou trava no modo tela** — experimente `--monitor 2`.
+**A janela abre preta ou trava no modo tela:** experimente `--monitor 2`.
 
-**Muito lento** — sem placa de vídeo NVIDIA o modelo roda na CPU, entre 3 e 10
+**Muito lento:** sem placa de vídeo NVIDIA o modelo roda na CPU, entre 3 e 10
 quadros por segundo. Para imagens e vídeos isso não importa; para webcam,
 incomoda. Com uma GPU NVIDIA, instale a versão CUDA do PyTorch conforme
 https://pytorch.org/get-started/locally/.
 
-**"ModuleNotFoundError: mss"** — só afeta o modo tela. Rode `pip install mss`
+**"ModuleNotFoundError: mss":** só afeta o modo tela. Rode `pip install mss`
 com o ambiente ativo.
+
+**A interface não abre ao clicar em `app.bat`:** rode `instalar.bat` antes. Se
+o erro continuar, abra pelo terminal com `.venv\Scripts\python.exe app_epi.py`
+para ver a mensagem.
 
 ---
 
 ## Estrutura
 
 ```
-detectar.py        script principal
+app_epi.py         interface gráfica (PySide6)
+detectar.py        detecção pela linha de comando
 pesos/             modelos treinados (yolo26n_best.pt, yolo11n_best.pt)
-exemplos/          imagem de amostra do SH17
+exemplos/          imagens de amostra do SH17 e captura da interface
 instalar.bat       cria o ambiente e instala as dependências (Windows)
-webcam.bat         atalhos de execução
+app.bat            abre a interface gráfica
+webcam.bat         atalhos da linha de comando
 tela.bat
 exemplos.bat
 requirements.txt
