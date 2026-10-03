@@ -36,7 +36,7 @@ CORES = {
 ROTULOS = {
     'helmet':      'capacete',
     'safety-vest': 'colete',
-    'head':        'cabeca descoberta',
+    'head':        'cabeca',
 }
 
 
@@ -123,7 +123,7 @@ def painel(quadro, contagem, fps=None):
     # ATENCAO: isto e uma leitura por QUADRO, nao por pessoa. O detector nao
     # associa o equipamento a um individuo — ver secao 4.8 do artigo.
     if contagem.get('head', 0) > 0:
-        aviso = 'ATENCAO: cabeca descoberta no quadro'
+        aviso = 'ATENCAO: cabeca encontrada no quadro'
         (tw, th), _ = cv2.getTextSize(aviso, cv2.FONT_HERSHEY_SIMPLEX, esc, 2)
         cv2.rectangle(quadro, (w - tw - 26, 8), (w - 8, 8 + th + 14),
                       (60, 60, 220), -1)

@@ -9,8 +9,11 @@ alerta de cabeça descoberta, pausa, captura de quadro e gravação.
 
 Uso:
     python app_epi.py            (ou dois cliques em app.bat)
+    python app_epi.py --print    abre com as imagens de exemplo, salva a janela
+                                 em exemplos/interface.png e fecha sozinho
 
-Atalhos: ESPAÇO pausa, S salva o quadro, ESC para, F11 tela cheia.
+Atalhos: ESPAÇO pausa, S salva o quadro, ESC para, F11 tela cheia,
+F12 salva uma imagem da janela inteira (em saidas/).
 """
 import os
 import sys
@@ -20,7 +23,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt, QThread, Signal, QUrl, QRectF
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QUrl, QRectF
 from PySide6.QtGui import (QColor, QDesktopServices, QFont, QImage, QKeySequence,
                            QPainter, QPen, QPixmap, QShortcut)
 from PySide6.QtWidgets import (
@@ -41,7 +44,7 @@ PASTA_EXEMPLOS = BASE / 'exemplos'
 CLASSES = [
     ('helmet',      'Capacete',          '#3CBE6E'),
     ('safety-vest', 'Colete',            '#EB8228'),
-    ('head',        'Cabeça descoberta', '#DC3C3C'),
+    ('head',        'Cabeça',            '#DC3C3C'),
 ]
 
 FONTES = [
@@ -191,6 +194,8 @@ class Detector(QThread):
         caminho = Path(self.valor)
         if caminho.is_dir():
             arquivos = sorted(p for p in caminho.iterdir() if p.suffix.lower() in EXT_IMG)
+            if self.tipo == 'exemplos':  # o print da própria interface não é exemplo
+                arquivos = [p for p in arquivos if p.name != 'interface.png']
         else:
             arquivos = [caminho]
         if not arquivos:
@@ -461,7 +466,7 @@ class Janela(QMainWindow):
 
         marca = QLabel('Detector de EPI')
         marca.setObjectName('marca')
-        sub = QLabel('Capacete, colete e cabeça descoberta')
+        sub = QLabel('Capacete, colete e cabeça')
         sub.setObjectName('suave')
         ll.addWidget(marca)
         ll.addWidget(sub)
@@ -519,6 +524,7 @@ class Janela(QMainWindow):
         self.pilha.addWidget(ex)                                                 # exemplos
         ll.addWidget(self.pilha)
         self.cb_fonte.currentIndexChanged.connect(self._trocar_fonte)
+        self.cb_fonte.currentIndexChanged.connect(lambda _: self._aplicar_ocultar())
         self._trocar_fonte(0)
 
         # modelo
@@ -586,16 +592,21 @@ class Janela(QMainWindow):
         btn_pasta = QPushButton('Abrir pasta de resultados')
         btn_pasta.setObjectName('discreto')
         btn_pasta.clicked.connect(self._abrir_saidas)
+        btn_janela = QPushButton('Salvar imagem da janela (F12)')
+        btn_janela.setObjectName('discreto')
+        btn_janela.clicked.connect(lambda: self._capturar_janela())
+        ll.addWidget(btn_janela)
         ll.addWidget(btn_pasta)
 
         # atalhos globais (os de letra/espaço ficam no keyPressEvent para não
         # atrapalhar a digitação nos campos de texto)
         QShortcut(QKeySequence(Qt.Key_F11), self, activated=self._tela_cheia)
         QShortcut(QKeySequence('Ctrl+S'), self, activated=self._salvar)
+        QShortcut(QKeySequence(Qt.Key_F12), self, activated=lambda: self._capturar_janela())
 
         # botões não "roubam" o foco: assim ESPAÇO pausa em vez de clicar no botão
         for b in (self.btn_iniciar, self.btn_pausa, self.btn_foto, self.btn_ant,
-                  self.btn_prox, btn_pasta):
+                  self.btn_prox, btn_pasta, btn_janela):
             b.setFocusPolicy(Qt.NoFocus)
 
         self._definir_alerta('neutro', 'Pronto — escolha a fonte e clique em Iniciar')
@@ -725,6 +736,17 @@ class Janela(QMainWindow):
             self.video._img.save(str(destino))
             self.lbl_status.setText(f'Quadro salvo: saidas/{destino.name}')
 
+    def _capturar_janela(self, destino=None):
+        """Salva a janela inteira como PNG (o Qt desenha a própria janela,
+        então funciona mesmo quando o Print Screen do Windows não pega o app)."""
+        if destino is None:
+            PASTA_SAIDA.mkdir(parents=True, exist_ok=True)
+            destino = PASTA_SAIDA / f'janela_{datetime.now():%Y%m%d_%H%M%S}.png'
+        Path(destino).parent.mkdir(parents=True, exist_ok=True)
+        self.grab().save(str(destino))
+        self.lbl_status.setText(f'Janela salva: {Path(destino).relative_to(BASE).as_posix()}')
+        return destino
+
     def _mudar_conf(self, v):
         self.lbl_conf.setText(f'{v / 100:.2f}')
         if self.worker is not None:
@@ -783,10 +805,10 @@ class Janela(QMainWindow):
         cabecas = contagem.get('head', 0)
         protegidos = contagem.get('helmet', 0)
         if cabecas:
-            txt = 'cabeça descoberta' if cabecas == 1 else 'cabeças descobertas'
+            txt = 'cabeça encontrada' if cabecas == 1 else 'cabeças encontradas'
             self._definir_alerta('perigo', f'Atenção: {cabecas} {txt} no quadro')
         elif protegidos:
-            self._definir_alerta('ok', 'Nenhuma cabeça descoberta no quadro')
+            self._definir_alerta('ok', 'Nenhuma cabeça encontrada no quadro')
         else:
             self._definir_alerta('neutro', 'Nenhuma pessoa detectada no quadro')
 
@@ -814,12 +836,18 @@ class Janela(QMainWindow):
         self.showNormal() if self.isFullScreen() else self.showFullScreen()
 
     def _aplicar_ocultar(self):
-        """Tira a janela da captura de tela (WDA_EXCLUDEFROMCAPTURE)."""
+        """Tira a janela da captura de tela (WDA_EXCLUDEFROMCAPTURE).
+
+        Só vale com a fonte "Captura de tela"; nas outras a janela fica visível
+        para o Print Screen / Ferramenta de Captura do Windows.
+        """
         if sys.platform != 'win32':
             return
         try:
             import ctypes
-            modo = 0x11 if self.chk_ocultar.isChecked() else 0x0
+            esconder = (self.chk_ocultar.isChecked()
+                        and self.cb_fonte.currentData() == 'tela')
+            modo = 0x11 if esconder else 0x0
             ctypes.windll.user32.SetWindowDisplayAffinity(int(self.winId()), modo)
         except Exception:
             pass
@@ -908,6 +936,24 @@ def main():
     app.setStyleSheet(ESTILO)
     janela = Janela()
     janela.show()
+    if '--print' in sys.argv:
+        # demonstração automática: roda nas imagens de exemplo, tira o print e fecha
+        janela.cb_fonte.setCurrentIndex(janela.cb_fonte.findData('exemplos'))
+        QTimer.singleShot(300, janela._iniciar)
+
+        inicio = time.monotonic()
+
+        def tirar_print():
+            # espera a primeira imagem processada (o modelo pode demorar a carregar)
+            if not janela.galeria and time.monotonic() - inicio < 180:
+                return QTimer.singleShot(500, tirar_print)
+            QTimer.singleShot(800, finalizar)  # dá tempo de desenhar contadores/alerta
+
+        def finalizar():
+            destino = janela._capturar_janela(PASTA_EXEMPLOS / 'interface.png')
+            print(f'Print salvo em {destino}')
+            janela.close()
+        QTimer.singleShot(1000, tirar_print)
     sys.exit(app.exec())
 
 
