@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Detector de EPI — capacete, colete de seguranca e cabeca descoberta.
+Detector de EPI: capacete, colete de seguranca e cabeca.
 
 Modelo treinado por Moises Kleinschmitt sobre o conjunto SH17, no ambito do
 artigo "Deteccao automatica de equipamentos de protecao individual por visao
@@ -27,7 +27,7 @@ import numpy as np
 EXT_IMG = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tif', '.tiff'}
 EXT_VID = {'.mp4', '.avi', '.mov', '.mkv', '.wmv', '.m4v', '.mpg', '.mpeg'}
 
-# BGR. Verde = protegido, laranja = colete, vermelho = cabeca descoberta.
+# BGR. Verde = capacete, laranja = colete, vermelho = cabeca.
 CORES = {
     'helmet':      (110, 190, 60),
     'safety-vest': (40, 130, 235),
@@ -43,7 +43,7 @@ ROTULOS = {
 # --------------------------------------------------------------- argumentos
 def ler_argumentos():
     p = argparse.ArgumentParser(
-        description='Detector de EPI (capacete, colete, cabeca descoberta).',
+        description='Detector de EPI (capacete, colete, cabeca).',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__)
     p.add_argument('--fonte', default='webcam',
@@ -119,7 +119,7 @@ def painel(quadro, contagem, fps=None):
         (tw, _), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, esc, 1)
         x += tw + 46
 
-    # Indicador de atencao: ha cabeca descoberta no quadro.
+    # Indicador de atencao: ha cabeca encontrada no quadro.
     # ATENCAO: isto e uma leitura por QUADRO, nao por pessoa. O detector nao
     # associa o equipamento a um individuo — ver secao 4.8 do artigo.
     if contagem.get('head', 0) > 0:
