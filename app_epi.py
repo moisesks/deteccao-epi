@@ -5,7 +5,7 @@ Detector de EPI — interface gráfica (PySide6 / Qt).
 
 Mesmos modelos e mesmo desenho de caixas do detectar.py, com uma janela de
 controle: escolha da fonte, do modelo e da confiança, contadores por classe,
-alerta de cabeça descoberta, pausa, captura de quadro e gravação.
+aviso de cabeças encontradas, pausa, captura de quadro e gravação.
 
 Uso:
     python app_epi.py            (ou dois cliques em app.bat)
