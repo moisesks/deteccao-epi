@@ -68,17 +68,20 @@ Na janela você escolhe:
 - o **modelo**: `yolo26n_best.pt` ou `yolo11n_best.pt`;
 - a **confiança mínima**, que pode ser ajustada com a detecção rodando.
 
-O painel da direita mostra quantos capacetes, coletes e cabeças há no quadro, e
-a faixa no topo informa quantas cabeças foram encontradas. Também dá para pausar,
-salvar o quadro atual, salvar a imagem da janela e gravar o vídeo com as
-detecções. Tudo vai para a pasta `saidas/`.
+O painel da direita mostra quantos capacetes e coletes há no quadro e quantas
+cabeças estão sem capacete. A faixa no topo fica vermelha quando aparece alguma
+cabeça sem capacete e verde quando todas estão com capacete. Em arquivos de
+vídeo, a barra abaixo da imagem mostra a posição e permite pular para qualquer
+trecho, inclusive com o vídeo pausado. Também dá para pausar, salvar o quadro
+atual, salvar a imagem da janela e gravar o vídeo com as detecções. Tudo vai
+para a pasta `saidas/`.
 
 | Tecla | Ação |
 |---|---|
 | `Espaço` | pausa e retoma |
 | `S` ou `Ctrl+S` | salva o quadro atual |
 | `F12` | salva a imagem da janela |
-| `←` e `→` | imagem anterior e próxima, no modo de imagens |
+| `←` e `→` | imagem anterior e próxima; no vídeo, volta e avança 5 segundos |
 | `F11` | tela cheia |
 | `Esc` | sai da tela cheia ou para a detecção |
 
@@ -147,22 +150,25 @@ equilibrado. Baixe para **0.20** se ele estiver deixando passar coisas; suba par
 ## Como interpretar
 
 As caixas são coloridas por classe: **verde** capacete, **laranja** colete,
-**vermelho** cabeça.
+**vermelho** cabeça sem capacete.
 
 **A classe cabeça não significa "sem capacete".** No SH17, a classe `head` marca
 qualquer cabeça visível, com ou sem capacete. Por isso uma pessoa de capacete
-costuma receber duas caixas ao mesmo tempo, uma de capacete e outra de cabeça. A
-cabeça indica que há uma pessoa no quadro; para saber se ela está protegida, é
-preciso conferir se há uma caixa de capacete sobre ela.
+costuma receber duas caixas ao mesmo tempo, uma de capacete e outra de cabeça.
+Para separar os casos, o aplicativo cruza as duas: uma cabeça conta como
+protegida quando há uma caixa de capacete sobreposta a ela (interseção de pelo
+menos 30% da menor das duas caixas, constante `LIMIAR_CAPACETE` em
+`detectar.py`). Cabeças protegidas não são desenhadas, porque o capacete já
+aparece; as demais recebem a etiqueta **"Sem capacete"**.
 
-O aviso **"Atenção: N cabeças encontradas no quadro"** (na linha de comando,
-**"ATENCAO: cabeca encontrada no quadro"**) aparece sempre que alguma cabeça é
-detectada. É uma leitura **por quadro, não por pessoa**: o detector localiza os
-objetos, mas não associa cada capacete ao seu trabalhador. Um capacete apoiado
-sobre uma bancada, por exemplo, também é contado. Essa limitação está declarada
-na seção 4.8 do artigo. Para decidir automaticamente quem está sem capacete, o
-caminho é associar cada cabeça ao capacete sobreposto a ela ou usar estimativa
-de pose.
+O aviso **"Atenção: N cabeças sem capacete no quadro"** (na linha de comando,
+**"ATENCAO: cabeca sem capacete no quadro"**) aparece quando há pelo menos uma.
+Continua sendo uma leitura **por quadro, não por pessoa**: o detector não
+identifica cada trabalhador. Um capacete segurado logo acima da cabeça pode
+contar como proteção, e um capacete que o modelo deixou de detectar faz a cabeça
+aparecer como sem capacete. Essa limitação está declarada na seção 4.8 do
+artigo; associar os equipamentos a cada pessoa por estimativa de pose é o
+próximo passo.
 
 ### O que esperar de cada classe
 

@@ -39,6 +39,60 @@ ROTULOS = {
     'head':        'cabeca',
 }
 
+# O que aparece no painel e no resumo: capacetes, coletes e cabecas SEM capacete.
+PAINEL = [
+    ('helmet',       'capacete',     CORES['helmet']),
+    ('safety-vest',  'colete',       CORES['safety-vest']),
+    ('sem_capacete', 'sem capacete', CORES['head']),
+]
+
+# A classe head do SH17 marca qualquer cabeca, com ou sem capacete. Uma cabeca
+# conta como protegida quando ha uma caixa de capacete sobreposta a ela, medida
+# pela intersecao dividida pela area da menor das duas caixas (o capacete
+# costuma ficar dentro da caixa da cabeca). Ajuste com as imagens de exemplo.
+LIMIAR_CAPACETE = 0.3
+
+
+# --------------------------------------------------------------- caixas
+def sobreposicao(a, b):
+    """Intersecao das caixas a e b dividida pela area da menor (0 a 1)."""
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    menor = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+    return ix * iy / menor if menor > 0 else 0.0
+
+
+def ler_caixas(resultado, nomes, limiar=LIMIAR_CAPACETE):
+    """Converte o resultado do YOLO em uma lista de dicionarios.
+
+    Cada item tem 'classe', 'conf', 'xyxy' e 'sem_capacete'. Esse ultimo so e
+    True para cabecas sem nenhuma caixa de capacete sobreposta. Continua sendo
+    uma leitura por quadro (secao 4.8 do artigo): um capacete na mao, logo
+    acima da cabeca, tambem pode contar como protecao.
+    """
+    b = resultado.boxes
+    if b is None or len(b) == 0:
+        return []
+    caixas = [{'classe': nomes[int(c)], 'conf': float(p),
+               'xyxy': tuple(float(v) for v in xyxy), 'sem_capacete': False}
+              for xyxy, c, p in zip(b.xyxy.tolist(), b.cls.tolist(), b.conf.tolist())]
+    capacetes = [c['xyxy'] for c in caixas if c['classe'] == 'helmet']
+    for c in caixas:
+        if c['classe'] == 'head':
+            c['sem_capacete'] = not any(sobreposicao(c['xyxy'], cap) >= limiar
+                                        for cap in capacetes)
+    return caixas
+
+
+def contar(caixas):
+    """Quantidade por classe, mais 'sem_capacete' (cabecas sem capacete)."""
+    contagem = {'helmet': 0, 'safety-vest': 0, 'head': 0, 'sem_capacete': 0}
+    for c in caixas:
+        contagem[c['classe']] = contagem.get(c['classe'], 0) + 1
+        if c['sem_capacete']:
+            contagem['sem_capacete'] += 1
+    return contagem
+
 
 # --------------------------------------------------------------- argumentos
 def ler_argumentos():
@@ -72,24 +126,28 @@ def ler_argumentos():
 
 # --------------------------------------------------------------- desenho
 def desenhar(quadro, resultado, nomes):
-    """Desenha as caixas e devolve a contagem por classe."""
-    contagem = {c: 0 for c in nomes.values()}
-    caixas = resultado.boxes
-    if caixas is None or len(caixas) == 0:
-        return quadro, contagem
+    """Desenha as caixas e devolve a contagem por classe.
 
-    for caixa in caixas:
-        x1, y1, x2, y2 = (int(v) for v in caixa.xyxy[0])
-        classe = nomes[int(caixa.cls[0])]
-        conf = float(caixa.conf[0])
-        contagem[classe] = contagem.get(classe, 0) + 1
+    Cabecas com capacete sobreposto nao sao desenhadas (o capacete ja aparece);
+    as que ficam sem capacete recebem a etiqueta "sem capacete".
+    """
+    caixas = ler_caixas(resultado, nomes)
+    contagem = contar(caixas)
+    grande = max(quadro.shape[:2]) >= 1000
+    espessura = 3 if grande else 2
+    escala = 0.6 if grande else 0.5
 
+    # cabecas sem capacete por ultimo, para a etiqueta delas ficar por cima
+    for c in sorted(caixas, key=lambda c: c['sem_capacete']):
+        classe = c['classe']
+        if classe == 'head' and not c['sem_capacete']:
+            continue
+        x1, y1, x2, y2 = (int(v) for v in c['xyxy'])
         cor = CORES.get(classe, (200, 200, 200))
-        espessura = 2 if max(quadro.shape[:2]) < 1000 else 3
         cv2.rectangle(quadro, (x1, y1), (x2, y2), cor, espessura)
 
-        texto = f'{ROTULOS.get(classe, classe)} {conf:.2f}'
-        escala = 0.5 if max(quadro.shape[:2]) < 1000 else 0.6
+        nome = 'sem capacete' if c['sem_capacete'] else ROTULOS.get(classe, classe)
+        texto = f"{nome} {c['conf']:.2f}"
         (tw, th), _ = cv2.getTextSize(texto, cv2.FONT_HERSHEY_SIMPLEX, escala, 1)
         topo = max(y1 - th - 8, 0)
         cv2.rectangle(quadro, (x1, topo), (x1 + tw + 8, topo + th + 8), cor, -1)
@@ -110,20 +168,20 @@ def painel(quadro, contagem, fps=None):
     esc = 0.62 if w >= 900 else 0.5
     y = int(altura * 0.62)
     x = 14
-    for classe in ('helmet', 'safety-vest', 'head'):
-        n = contagem.get(classe, 0)
-        cv2.circle(quadro, (x, y - 5), 6, CORES[classe], -1)
-        txt = f'{ROTULOS[classe]}: {n}'
+    for chave, rotulo, cor in PAINEL:
+        n = contagem.get(chave, 0)
+        cv2.circle(quadro, (x, y - 5), 6, cor, -1)
+        txt = f'{rotulo}: {n}'
         cv2.putText(quadro, txt, (x + 14, y), cv2.FONT_HERSHEY_SIMPLEX, esc,
                     (245, 245, 245), 1, cv2.LINE_AA)
         (tw, _), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, esc, 1)
         x += tw + 46
 
-    # Indicador de atencao: ha cabeca encontrada no quadro.
-    # ATENCAO: isto e uma leitura por QUADRO, nao por pessoa. O detector nao
-    # associa o equipamento a um individuo — ver secao 4.8 do artigo.
-    if contagem.get('head', 0) > 0:
-        aviso = 'ATENCAO: cabeca encontrada no quadro'
+    # Indicador de atencao: ha cabeca sem capacete sobreposto no quadro.
+    # Continua sendo uma leitura por QUADRO: o detector nao identifica cada
+    # trabalhador, so cruza as caixas de cabeca e capacete (secao 4.8 do artigo).
+    if contagem.get('sem_capacete', 0) > 0:
+        aviso = 'ATENCAO: cabeca sem capacete no quadro'
         (tw, th), _ = cv2.getTextSize(aviso, cv2.FONT_HERSHEY_SIMPLEX, esc, 2)
         cv2.rectangle(quadro, (w - tw - 26, 8), (w - 8, 8 + th + 14),
                       (60, 60, 220), -1)
@@ -171,8 +229,8 @@ def processar_imagens(modelo, caminhos, args, nomes):
 
         destino = pasta / f'{caminho.stem}_detectado.jpg'
         cv2.imwrite(str(destino), quadro)
-        resumo = ', '.join(f'{ROTULOS[c]}={contagem.get(c,0)}'
-                           for c in ('helmet', 'safety-vest', 'head'))
+        resumo = ', '.join(f'{rotulo}={contagem.get(chave, 0)}'
+                           for chave, rotulo, _ in PAINEL)
         print(f'  {caminho.name}: {resumo}  ->  {destino}')
 
         if not args.sem_janela:

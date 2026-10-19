@@ -5,7 +5,8 @@ Detector de EPI — interface gráfica (PySide6 / Qt).
 
 Mesmos modelos e mesmo desenho de caixas do detectar.py, com uma janela de
 controle: escolha da fonte, do modelo e da confiança, contadores por classe,
-aviso de cabeças encontradas, pausa, captura de quadro e gravação.
+aviso de cabeças sem capacete, pausa, captura de quadro, gravação e barra de
+tempo para arquivos de vídeo.
 
 Uso:
     python app_epi.py            (ou dois cliques em app.bat)
@@ -13,7 +14,8 @@ Uso:
                                  em exemplos/interface.png e fecha sozinho
 
 Atalhos: ESPAÇO pausa, S salva o quadro, ESC para, F11 tela cheia,
-F12 salva uma imagem da janela inteira (em saidas/).
+F12 salva uma imagem da janela inteira (em saidas/), ← e → trocam de imagem
+(no vídeo, voltam e avançam 5 segundos).
 """
 import os
 import sys
@@ -29,11 +31,11 @@ from PySide6.QtGui import (QColor, QDesktopServices, QFont, QImage, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout,
     QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
-    QScrollArea, QSizePolicy, QSlider, QSpinBox, QStackedWidget, QVBoxLayout,
-    QWidget,
+    QScrollArea, QSizePolicy, QSlider, QSpinBox, QStackedWidget, QStyle,
+    QStyleOptionSlider, QVBoxLayout, QWidget,
 )
 
-from detectar import EXT_IMG, EXT_VID
+from detectar import EXT_IMG, EXT_VID, contar, ler_caixas
 
 BASE = Path(__file__).resolve().parent
 PASTA_PESOS = BASE / 'pesos'
@@ -46,6 +48,22 @@ CLASSES = [
     ('safety-vest', 'Colete',            '#EB8228'),
     ('head',        'Cabeça',            '#DC3C3C'),
 ]
+
+# Cartões do painel: a cabeça só entra na conta quando não tem capacete sobre ela.
+CONTADORES = [
+    ('helmet',       'Capacete',     '#3CBE6E'),
+    ('safety-vest',  'Colete',       '#EB8228'),
+    ('sem_capacete', 'Sem capacete', '#DC3C3C'),
+]
+
+# Cabeças com capacete sobreposto não são desenhadas: o capacete já aparece e a
+# caixa vermelha passaria a ideia de problema. True mostra essas cabeças em cinza.
+MOSTRAR_CABECAS_PROTEGIDAS = False
+COR_PROTEGIDA = '#8C959F'
+
+# Tamanho das etiquetas na tela, em pixels, qualquer que seja a resolução da imagem.
+FONTE_TELA_PX = 13
+TRACO_TELA_PX = 2.0
 
 FONTES = [
     ('webcam',   'Webcam'),
@@ -87,55 +105,69 @@ def para_bgr(img):
     return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
 
-def anotar(quadro_bgr, resultado, nomes):
-    """Desenha caixas e etiquetas (com acentos) e devolve (QImage, contagem)."""
-    img = para_qimage(quadro_bgr)
-    contagem = {c: 0 for c in nomes.values()}
-    caixas = resultado.boxes
-    if caixas is None or len(caixas) == 0:
-        return img, contagem
+def desenhar_caixas(p, caixas, escala, fonte_px, traco, largura):
+    """Desenha caixas e etiquetas com o QPainter p.
 
-    w = img.width()
-    traco = max(2.0, w / 480)
+    escala converte as coordenadas da imagem original para a superfície em que
+    se desenha; fonte_px e traco já vêm no tamanho final dessa superfície.
+    """
     fonte = QFont('Segoe UI')
-    fonte.setPixelSize(int(max(12, min(28, w / 75))))
+    fonte.setPixelSize(max(8, int(round(fonte_px))))
     fonte.setBold(True)
-
-    p = QPainter(img)
     p.setRenderHint(QPainter.Antialiasing)
     p.setFont(fonte)
     fm = p.fontMetrics()
-    for caixa in caixas:
-        x1, y1, x2, y2 = (float(v) for v in caixa.xyxy[0])
-        classe = nomes[int(caixa.cls[0])]
-        conf = float(caixa.conf[0])
-        contagem[classe] = contagem.get(classe, 0) + 1
-        cor = COR.get(classe, QColor('#C8C8C8'))
+    # cabeças sem capacete por último, para a etiqueta delas ficar por cima
+    for c in sorted(caixas, key=lambda c: c['sem_capacete']):
+        classe = c['classe']
+        protegida = classe == 'head' and not c['sem_capacete']
+        if protegida and not MOSTRAR_CABECAS_PROTEGIDAS:
+            continue
+        x1, y1, x2, y2 = (v * escala for v in c['xyxy'])
+        cor = QColor(COR_PROTEGIDA) if protegida else COR.get(classe, QColor('#C8C8C8'))
 
         p.setPen(QPen(cor, traco))
         p.setBrush(Qt.NoBrush)
         p.drawRoundedRect(QRectF(x1, y1, x2 - x1, y2 - y1), traco * 1.5, traco * 1.5)
 
-        texto = f'{ROTULO.get(classe, classe)}  {conf:.0%}'
-        tw, th = fm.horizontalAdvance(texto) + 12, fm.height() + 6
+        nome = 'Sem capacete' if c['sem_capacete'] else ROTULO.get(classe, classe)
+        texto = f"{nome}  {c['conf']:.0%}"
+        # folgas proporcionais à fonte (13 px na tela -> 12 x 6 px, como antes)
+        tw = fm.horizontalAdvance(texto) + fonte_px * 0.9
+        th = fm.height() + fonte_px * 0.45
         topo = y1 - th - traco if y1 - th - traco > 0 else y1 + traco
-        esquerda = max(0.0, min(x1 - traco / 2, w - tw))  # não sair pela borda
+        esquerda = max(0.0, min(x1 - traco / 2, largura - tw))  # não sair pela borda
         etiqueta = QRectF(esquerda, topo, tw, th)
         p.setPen(Qt.NoPen)
         p.setBrush(cor)
-        p.drawRoundedRect(etiqueta, 4, 4)
+        p.drawRoundedRect(etiqueta, fonte_px * 0.3, fonte_px * 0.3)
         p.setPen(QColor('#FFFFFF'))
         p.drawText(etiqueta, Qt.AlignCenter, texto)
-    p.end()
-    return img, contagem
+
+
+def anotar(img, caixas):
+    """Cópia da imagem com as caixas no tamanho original (para salvar e gravar).
+
+    As etiquetas acompanham o tamanho da imagem, para continuarem legíveis
+    quando o arquivo salvo for aberto.
+    """
+    img = img.copy()
+    if caixas:
+        lado = max(img.width(), img.height())
+        p = QPainter(img)
+        desenhar_caixas(p, caixas, 1.0, max(12.0, lado / 70), max(2.0, lado / 600),
+                        img.width())
+        p.end()
+    return img
 
 
 # =================================================================== worker
 class Detector(QThread):
     """Lê a fonte, roda o modelo e devolve quadros anotados para a janela."""
 
-    quadro = Signal(QImage, dict, float)        # imagem, contagem, fps
-    imagem = Signal(QImage, dict, str)          # modo imagens: um resultado por arquivo
+    quadro = Signal(QImage, list, dict, float)  # imagem, caixas, contagem, fps
+    imagem = Signal(QImage, list, dict, str)    # modo imagens: um resultado por arquivo
+    progresso = Signal(int, int, float)         # vídeo: quadro atual, total, fps do arquivo
     status = Signal(str)
     erro = Signal(str)
 
@@ -154,7 +186,8 @@ class Detector(QThread):
         self._salvar = False
         self._escritor = None
         self._arquivo_gravacao = None
-        self._ultimo = None
+        self._ultimo = None          # (imagem, caixas) do último quadro
+        self._ir_para = None         # quadro pedido pela barra de tempo
 
     # ------------------------------------------------ comandos da janela
     def parar(self):
@@ -166,6 +199,10 @@ class Detector(QThread):
 
     def salvar_quadro(self):
         self._salvar = True
+
+    def ir_para(self, quadro):
+        """Pede para o vídeo pular para o quadro indicado (vale também pausado)."""
+        self._ir_para = max(0, int(quadro))
 
     # ------------------------------------------------ execução
     def run(self):
@@ -187,8 +224,12 @@ class Detector(QThread):
             self._fechar_gravacao()
 
     def _detectar(self, modelo, nomes, quadro):
+        """Devolve a imagem sem anotação, as caixas e a contagem. As caixas são
+        desenhadas na tela já no tamanho de exibição (etiquetas sempre legíveis)
+        e, no tamanho original, só quando o quadro é salvo ou gravado."""
         r = modelo.predict(quadro, conf=self.conf, iou=self.iou, verbose=False)[0]
-        return anotar(quadro, r, nomes)
+        caixas = ler_caixas(r, nomes)
+        return para_qimage(quadro), caixas, contar(caixas)
 
     def _rodar_imagens(self, modelo, nomes):
         caminho = Path(self.valor)
@@ -208,10 +249,10 @@ class Detector(QThread):
             if quadro is None:
                 self.status.emit(f'Não consegui abrir {arq.name}')
                 continue
-            img, contagem = self._detectar(modelo, nomes, quadro)
+            img, caixas, contagem = self._detectar(modelo, nomes, quadro)
             destino = PASTA_SAIDA / f'{arq.stem}_detectado.jpg'
-            img.save(str(destino), quality=92)
-            self.imagem.emit(img, contagem, arq.name)
+            anotar(img, caixas).save(str(destino), quality=92)
+            self.imagem.emit(img, caixas, contagem, arq.name)
             self.status.emit(f'{i}/{len(arquivos)} imagens processadas — salvas em saidas/')
 
     def _rodar_captura(self, modelo, nomes):
@@ -234,10 +275,15 @@ class Detector(QThread):
         intervalo = 1.0 / fps_fonte if self.tipo == 'video' else 0.0
 
         self.status.emit(f'Rodando: {descricao}')
-        n, t0, fps = 0, time.time(), 0.0
+        n, t0, fps, pos = 0, time.time(), 0.0, 0
         try:
             while not self._parar:
-                if self.pausado:
+                forcar = False
+                if self._ir_para is not None and self.tipo == 'video':
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, self._ir_para)
+                    self._ir_para = None
+                    forcar = True  # pausado, mostra o quadro novo e continua pausado
+                if self.pausado and not forcar:
                     self._atender_salvar()
                     self.msleep(30)
                     continue
@@ -249,19 +295,23 @@ class Detector(QThread):
                     else:
                         self.erro.emit('A fonte parou de enviar imagens.')
                     break
-                img, contagem = self._detectar(modelo, nomes, quadro)
+                if total:
+                    pos = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                img, caixas, contagem = self._detectar(modelo, nomes, quadro)
                 n += 1
                 if n % 10 == 0:
                     fps = 10 / max(time.time() - t0, 1e-6)
                     t0 = time.time()
-                self._ultimo = img
-                self._escrever(img, fps_fonte)
+                self._ultimo = (img, caixas)
+                self._escrever(img, caixas, fps_fonte)
                 self._atender_salvar()
-                self.quadro.emit(img, contagem, fps)
-                if total and n % 25 == 0:
-                    self.status.emit(f'{descricao}: {n}/{total} quadros')
+                self.quadro.emit(img, caixas, contagem, fps)
+                if total:
+                    self.progresso.emit(pos, total, fps_fonte)
+                    if n % 25 == 0:
+                        self.status.emit(f'{descricao}: {pos}/{total} quadros')
                 # vídeo em arquivo: não passar mais rápido que o original
-                if intervalo:
+                if intervalo and not self.pausado:
                     resto = intervalo - (time.time() - inicio)
                     if resto > 0:
                         time.sleep(resto)
@@ -290,22 +340,22 @@ class Detector(QThread):
                     continue
                 bruto = np.array(sct.grab(area))
                 quadro = cv2.cvtColor(bruto, cv2.COLOR_BGRA2BGR)
-                img, contagem = self._detectar(modelo, nomes, quadro)
+                img, caixas, contagem = self._detectar(modelo, nomes, quadro)
                 n += 1
                 if n % 10 == 0:
                     fps = 10 / max(time.time() - t0, 1e-6)
                     t0 = time.time()
-                self._ultimo = img
-                self._escrever(img, 10.0)
+                self._ultimo = (img, caixas)
+                self._escrever(img, caixas, 10.0)
                 self._atender_salvar()
-                self.quadro.emit(img, contagem, fps)
+                self.quadro.emit(img, caixas, contagem, fps)
 
     # ------------------------------------------------ gravação e captura
-    def _escrever(self, img, fps):
+    def _escrever(self, img, caixas, fps):
         if not self.gravar:
             self._fechar_gravacao()
             return
-        quadro = para_bgr(img)
+        quadro = para_bgr(anotar(img, caixas))
         if self._escritor is None:
             h, w = quadro.shape[:2]
             carimbo = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -327,7 +377,7 @@ class Detector(QThread):
             self._salvar = False
             carimbo = datetime.now().strftime('%Y%m%d_%H%M%S')
             destino = PASTA_SAIDA / f'quadro_{carimbo}.jpg'
-            self._ultimo.save(str(destino), quality=92)
+            anotar(*self._ultimo).save(str(destino), quality=92)
             self.status.emit(f'Quadro salvo: saidas/{destino.name}')
 
 
@@ -342,27 +392,90 @@ class Video(QLabel):
         self.setMinimumSize(480, 300)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._img = None
+        self._caixas = []
         self.limpar()
 
     def limpar(self):
         self._img = None
+        self._caixas = []
         self.setPixmap(QPixmap())
         self.setText('Escolha a fonte ao lado e clique em Iniciar.')
 
-    def mostrar(self, img):
+    def mostrar(self, img, caixas):
         self._img = img
+        self._caixas = caixas
         self._ajustar()
 
+    def imagem_anotada(self):
+        """Quadro exibido, com as caixas no tamanho original (para salvar)."""
+        return None if self._img is None else anotar(self._img, self._caixas)
+
     def _ajustar(self):
+        """Reduz a imagem para a área disponível e só então desenha as caixas,
+        assim as etiquetas têm sempre o mesmo tamanho na tela, seja a imagem de
+        640 ou de 6000 pixels."""
         if self._img is None:
             return
+        dpr = self.devicePixelRatioF()
         pix = QPixmap.fromImage(self._img).scaled(
-            self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.size() * dpr, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        pix.setDevicePixelRatio(dpr)
+        largura = pix.width() / dpr
+        if self._caixas:
+            p = QPainter(pix)
+            desenhar_caixas(p, self._caixas, largura / self._img.width(),
+                            FONTE_TELA_PX, TRACO_TELA_PX, largura)
+            p.end()
         self.setPixmap(pix)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._ajustar()
+
+
+class BarraTempo(QSlider):
+    """Barra de posição do vídeo: arrastar ou clicar em qualquer ponto pula
+    para aquele trecho."""
+
+    buscar = Signal(int)
+
+    def __init__(self):
+        super().__init__(Qt.Horizontal)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.sliderReleased.connect(lambda: self.buscar.emit(self.value()))
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton and self.isEnabled():
+            opt = QStyleOptionSlider()
+            self.initStyleOption(opt)
+            puxador = self.style().subControlRect(QStyle.CC_Slider, opt,
+                                                  QStyle.SC_SliderHandle, self)
+            if not puxador.contains(e.position().toPoint()):
+                trilho = self.style().subControlRect(QStyle.CC_Slider, opt,
+                                                     QStyle.SC_SliderGroove, self)
+                x = int(e.position().x() - trilho.x() - puxador.width() / 2)
+                v = QStyle.sliderValueFromPosition(self.minimum(), self.maximum(), x,
+                                                   trilho.width() - puxador.width())
+                self.setValue(v)
+                self.buscar.emit(v)
+                e.accept()
+                return
+        super().mousePressEvent(e)
+
+    def atualizar(self, atual, total):
+        if self.isSliderDown():  # não brigar com quem está arrastando
+            return
+        self.blockSignals(True)
+        self.setMaximum(max(0, total - 1))
+        self.setValue(atual)
+        self.blockSignals(False)
+
+
+def tempo(segundos):
+    segundos = int(max(0, segundos))
+    h, resto = divmod(segundos, 3600)
+    m, s = divmod(resto, 60)
+    return f'{h}:{m:02d}:{s:02d}' if h else f'{m}:{s:02d}'
 
 
 class Contador(QFrame):
@@ -403,6 +516,7 @@ class Janela(QMainWindow):
         self.worker = None
         self.galeria = []
         self.indice = 0
+        self._fps_video = 25.0
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -420,12 +534,26 @@ class Janela(QMainWindow):
         self.alerta = QLabel()
         self.alerta.setObjectName('alerta')
         self.alerta.setAlignment(Qt.AlignCenter)
-        self.alerta.setToolTip('Leitura por quadro, não por pessoa: o detector não associa\n'
-                               'cada capacete a um trabalhador (seção 4.8 do artigo).')
+        self.alerta.setToolTip('Sem capacete = cabeça sem nenhuma caixa de capacete sobre ela.\n'
+                               'É uma leitura por quadro: o detector não identifica cada\n'
+                               'trabalhador (seção 4.8 do artigo).')
         lp.addWidget(self.alerta)
 
         self.video = Video()
         lp.addWidget(self.video, 1)
+
+        self.barra_video = QWidget()
+        lb = QHBoxLayout(self.barra_video)
+        lb.setContentsMargins(0, 0, 0, 0)
+        self.sl_tempo = BarraTempo()
+        self.sl_tempo.buscar.connect(self._buscar)
+        self.lbl_tempo = QLabel('0:00 / 0:00')
+        self.lbl_tempo.setObjectName('suave')
+        lb.addWidget(self.sl_tempo, 1)
+        lb.addSpacing(8)
+        lb.addWidget(self.lbl_tempo)
+        self.barra_video.hide()
+        lp.addWidget(self.barra_video)
 
         self.nav = QWidget()
         ln = QHBoxLayout(self.nav)
@@ -540,7 +668,7 @@ class Janela(QMainWindow):
         ll.addSpacing(6)
         topo_conf = QHBoxLayout()
         topo_conf.addWidget(titulo_secao('Confiança mínima'))
-        self.lbl_conf = QLabel('0.35')
+        self.lbl_conf = QLabel('35%')
         self.lbl_conf.setObjectName('conf')
         topo_conf.addStretch()
         topo_conf.addWidget(self.lbl_conf)
@@ -583,7 +711,7 @@ class Janela(QMainWindow):
         topo_cont.addWidget(self.lbl_fps)
         ll.addLayout(topo_cont)
         self.contadores = {}
-        for chave, rotulo, cor in CLASSES:
+        for chave, rotulo, cor in CONTADORES:
             c = Contador(rotulo, cor)
             self.contadores[chave] = c
             ll.addWidget(c)
@@ -647,22 +775,49 @@ class Janela(QMainWindow):
         self.pilha.setFixedHeight(self.pilha.currentWidget().sizeHint().height())
 
     # ------------------------------------------------ escolha de arquivos
+    @staticmethod
+    def _definir_caminho(edit, caminho):
+        """Mostra só o nome do arquivo ou da pasta; o caminho inteiro fica no
+        tooltip (e fora das gravações de tela)."""
+        edit.setProperty('caminho', caminho)
+        edit.setText(Path(caminho).name or caminho)
+        edit.setToolTip(caminho)
+        edit.setCursorPosition(0)
+
+    @staticmethod
+    def _caminho(edit):
+        """Caminho completo do campo. Se a pessoa digitou outro, vale o digitado."""
+        texto = edit.text().strip()
+        cheio = edit.property('caminho')
+        if cheio and texto == (Path(cheio).name or cheio):
+            return cheio
+        return texto
+
+    def _pasta_inicial(self, edit):
+        atual = self._caminho(edit)
+        if atual and Path(atual).exists():
+            return str(Path(atual) if Path(atual).is_dir() else Path(atual).parent)
+        return str(Path.home())
+
     def _escolher_video(self):
         filtro = 'Vídeos (' + ' '.join('*' + e for e in sorted(EXT_VID)) + ')'
-        arq, _ = QFileDialog.getOpenFileName(self, 'Escolher vídeo', str(Path.home()), filtro)
+        arq, _ = QFileDialog.getOpenFileName(self, 'Escolher vídeo',
+                                             self._pasta_inicial(self.ed_video), filtro)
         if arq:
-            self.ed_video.setText(arq)
+            self._definir_caminho(self.ed_video, arq)
 
     def _escolher_imagem(self):
         filtro = 'Imagens (' + ' '.join('*' + e for e in sorted(EXT_IMG)) + ')'
-        arq, _ = QFileDialog.getOpenFileName(self, 'Escolher imagem', str(Path.home()), filtro)
+        arq, _ = QFileDialog.getOpenFileName(self, 'Escolher imagem',
+                                             self._pasta_inicial(self.ed_img), filtro)
         if arq:
-            self.ed_img.setText(arq)
+            self._definir_caminho(self.ed_img, arq)
 
     def _escolher_pasta(self):
-        pasta = QFileDialog.getExistingDirectory(self, 'Escolher pasta', str(Path.home()))
+        pasta = QFileDialog.getExistingDirectory(self, 'Escolher pasta',
+                                                 self._pasta_inicial(self.ed_img))
         if pasta:
-            self.ed_img.setText(pasta)
+            self._definir_caminho(self.ed_img, pasta)
 
     # ------------------------------------------------ controle
     def _iniciar_parar(self):
@@ -675,11 +830,11 @@ class Janela(QMainWindow):
         tipo = self.cb_fonte.currentData()
         valor = None
         if tipo == 'video':
-            valor = self.ed_video.text().strip()
+            valor = self._caminho(self.ed_video)
             if not valor or not Path(valor).is_file():
                 return self._avisar('Escolha um arquivo de vídeo.')
         elif tipo == 'imagens':
-            valor = self.ed_img.text().strip()
+            valor = self._caminho(self.ed_img)
             if not valor or not Path(valor).exists():
                 return self._avisar('Escolha uma imagem ou pasta.')
         elif tipo == 'rtsp':
@@ -694,6 +849,9 @@ class Janela(QMainWindow):
         self.galeria, self.indice = [], 0
         self.nav.setVisible(tipo in ('imagens', 'exemplos'))
         self.lbl_nav.setText('')
+        self.barra_video.setVisible(tipo == 'video')
+        self.sl_tempo.atualizar(0, 0)
+        self.lbl_tempo.setText('0:00 / 0:00')
         self.video.limpar()
         self.video.setText('Carregando o modelo…')
         self._aplicar_ocultar()
@@ -703,6 +861,7 @@ class Janela(QMainWindow):
                                self.sp_monitor.value(), self.chk_gravar.isChecked())
         self.worker.quadro.connect(self._receber_quadro)
         self.worker.imagem.connect(self._receber_imagem)
+        self.worker.progresso.connect(self._receber_progresso)
         self.worker.status.connect(self.lbl_status.setText)
         self.worker.erro.connect(self._erro)
         self.worker.finished.connect(self._terminou)
@@ -733,7 +892,7 @@ class Janela(QMainWindow):
         elif self.video._img is not None:
             PASTA_SAIDA.mkdir(parents=True, exist_ok=True)
             destino = PASTA_SAIDA / f'quadro_{datetime.now():%Y%m%d_%H%M%S}.png'
-            self.video._img.save(str(destino))
+            self.video.imagem_anotada().save(str(destino))
             self.lbl_status.setText(f'Quadro salvo: saidas/{destino.name}')
 
     def _capturar_janela(self, destino=None):
@@ -748,7 +907,7 @@ class Janela(QMainWindow):
         return destino
 
     def _mudar_conf(self, v):
-        self.lbl_conf.setText(f'{v / 100:.2f}')
+        self.lbl_conf.setText(f'{v}%')
         if self.worker is not None:
             self.worker.conf = v / 100
 
@@ -765,15 +924,30 @@ class Janela(QMainWindow):
         self.btn_pausa.setText('Pausar')
         for w in (self.cb_fonte, self.pilha, self.cb_modelo):
             w.setEnabled(not rodando)
+        self.sl_tempo.setEnabled(rodando)
 
     # ------------------------------------------------ resultados
-    def _receber_quadro(self, img, contagem, fps):
-        self.video.mostrar(img)
+    def _receber_quadro(self, img, caixas, contagem, fps):
+        self.video.mostrar(img, caixas)
         self._atualizar_contagem(contagem)
         self.lbl_fps.setText(f'{fps:.1f} fps' if fps else '')
 
-    def _receber_imagem(self, img, contagem, nome):
-        self.galeria.append((img, contagem, nome))
+    def _receber_progresso(self, atual, total, fps):
+        self._fps_video = fps
+        self.sl_tempo.atualizar(atual, total)
+        self.lbl_tempo.setText(f'{tempo(atual / fps)} / {tempo(total / fps)}')
+
+    def _buscar(self, quadro):
+        if self.worker is None or not self.worker.isRunning():
+            return
+        quadro = max(0, min(int(quadro), self.sl_tempo.maximum()))
+        self.worker.ir_para(quadro)
+        total = self.sl_tempo.maximum() + 1
+        self.lbl_tempo.setText(f'{tempo(quadro / self._fps_video)} / '
+                               f'{tempo(total / self._fps_video)}')
+
+    def _receber_imagem(self, img, caixas, contagem, nome):
+        self.galeria.append((img, caixas, contagem, nome))
         if len(self.galeria) == 1:
             self._mostrar_galeria(0)
         else:
@@ -783,18 +957,20 @@ class Janela(QMainWindow):
         if not self.galeria:
             return
         self.indice = max(0, min(i, len(self.galeria) - 1))
-        img, contagem, _ = self.galeria[self.indice]
-        self.video.mostrar(img)
+        img, caixas, contagem, _ = self.galeria[self.indice]
+        self.video.mostrar(img, caixas)
         self._atualizar_contagem(contagem)
         self._atualizar_nav()
 
     def _navegar(self, passo):
         if self.nav.isVisible():
             self._mostrar_galeria(self.indice + passo)
+        elif self.barra_video.isVisible():  # vídeo: volta ou avança 5 segundos
+            self._buscar(self.sl_tempo.value() + passo * round(5 * self._fps_video))
 
     def _atualizar_nav(self):
         total = len(self.galeria)
-        nome = self.galeria[self.indice][2] if total else ''
+        nome = self.galeria[self.indice][3] if total else ''
         self.lbl_nav.setText(f'{self.indice + 1} de {total}   ·   {nome}')
         self.btn_ant.setEnabled(self.indice > 0)
         self.btn_prox.setEnabled(self.indice < total - 1)
@@ -802,13 +978,14 @@ class Janela(QMainWindow):
     def _atualizar_contagem(self, contagem):
         for chave, cartao in self.contadores.items():
             cartao.definir(contagem.get(chave, 0))
+        sem = contagem.get('sem_capacete', 0)
         cabecas = contagem.get('head', 0)
-        protegidos = contagem.get('helmet', 0)
-        if cabecas:
-            txt = 'cabeça encontrada' if cabecas == 1 else 'cabeças encontradas'
-            self._definir_alerta('perigo', f'Atenção: {cabecas} {txt} no quadro')
-        elif protegidos:
-            self._definir_alerta('ok', 'Nenhuma cabeça encontrada no quadro')
+        capacetes = contagem.get('helmet', 0)
+        if sem:
+            txt = 'cabeça sem capacete' if sem == 1 else 'cabeças sem capacete'
+            self._definir_alerta('perigo', f'Atenção: {sem} {txt} no quadro')
+        elif cabecas or capacetes:
+            self._definir_alerta('ok', 'Todos com capacete no quadro')
         else:
             self._definir_alerta('neutro', 'Nenhuma pessoa detectada no quadro')
 
@@ -920,10 +1097,16 @@ QPushButton:pressed { background: #E1E5E9; }
 QPushButton:disabled { color: #8C959F; }
 #iniciar { background: #1F6FEB; border: 1px solid #1A5FCC; color: #FFFFFF; font-weight: 600; padding: 7px; }
 #iniciar:hover { background: #1A5FCC; }
-#iniciar[rodando="true"] { background: #CF222E; border-color: #A40E26; }
-#iniciar[rodando="true"]:hover { background: #A40E26; }
+#iniciar[rodando="true"] { background: #FFFFFF; border-color: #8C959F; color: #1F2328; }
+#iniciar[rodando="true"]:hover { background: #F6F8FA; }
 
 QCheckBox { spacing: 6px; }
+QSlider::groove:horizontal { height: 4px; background: #D0D7DE; border-radius: 2px; }
+QSlider::sub-page:horizontal { background: #0969DA; border-radius: 2px; }
+QSlider::sub-page:horizontal:disabled { background: #8C959F; }
+QSlider::handle:horizontal {
+    background: #FFFFFF; border: 1px solid #8C959F; width: 12px; margin: -5px 0; border-radius: 6px;
+}
 QToolTip { background: #FFFFFF; color: #1F2328; border: 1px solid #D0D7DE; padding: 4px; }
 """
 
